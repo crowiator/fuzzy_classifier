@@ -1,0 +1,10 @@
+neurokit2
+wfdb
+PyWavelets
+scikit-fuzzy
+scikit-learn
+pandas
+matplotlib
+pytest
+numpy
+neurokit2
