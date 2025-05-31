@@ -8,3 +8,4 @@ matplotlib
 pytest
 numpy
 neurokit2
+pywt
