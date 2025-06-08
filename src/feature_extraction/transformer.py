@@ -57,6 +57,7 @@ class FeatureExtractor(BaseEstimator, TransformerMixin):
             beats_df = extract_beats(sig, fs)
             wl_feats = extract_wavelet_features(sig, fs, levels=self.wavelet_levels)
             for _, beat_row in beats_df.iterrows():
+                beat_row.drop(["beat_idx", "R_sample"])
                 rows.append(pd.concat([beat_row, pd.Series(wl_feats)]))
 
         df = pd.DataFrame(rows, columns=self.feature_names_)
