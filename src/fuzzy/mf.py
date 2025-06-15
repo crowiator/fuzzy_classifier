@@ -62,9 +62,11 @@ LOG_FEATURE_EXACT  = {"ratio_L2_L3"}
 TWO_LEVEL_FEATURES: Set[str] = {"ratio_L2_L3"}
 
 # Klinické ručné hranice (μ_low, μ_high)
-MANUAL_BOUNDS: Dict[str, Tuple[float, float]] = {
-    "RR_s":   (0.55, 1.00),   # krátky / dlhý RR
-    "HR_bpm": (55.0, 100.0),  # brady / tachy
+MANUAL_BOUNDS = {
+    "RR_s":   (0.55, 1.00),
+    "HR_bpm": (60.0, 100.0),
+    "QRSd_ms": (80.0, 120.0),
+    "r_amp":  (0.5, 1.5),
 }
 
 _CRISP_SIGMA = 1e-3  # prakticky delta‑funkcia (ale σ ≠ 0, aby nedošlo k /0)
