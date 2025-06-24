@@ -115,12 +115,12 @@ def dwt_denoise(
 
 
 def clean_ecg_v2(
-    signal: np.ndarray,
-    fs: int,
-    *,
-    add_dwt: bool = True,
-    wavelet: str = "db6",
-    nk_method: str = "neurokit",
+        signal: np.ndarray,
+        fs: int,
+        *,
+        add_dwt: bool = True,
+        wavelet: str = "db6",
+        nk_method: str = "neurokit",
 ) -> np.ndarray:
     """
     Odporúčaný preset:
@@ -129,20 +129,16 @@ def clean_ecg_v2(
         3) (voliteľne) DWT denoising
         4) NeuroKit2 ecg_clean (bazálna línia)
     """
+    # krok 1 + 2 (band-pass + notch)
     sig = custom_filter(signal, fs, lowcut=0.5, highcut=40, powerline=60)
-    print("som tu ")
-    # krok 3
+
+    # krok 3 (voliteľne DWT)
     if add_dwt:
         sig = dwt_denoise(sig, wavelet=wavelet)
 
-    # krok 4
-    sig = custom_filter(signal, fs, lowcut=0.5, highcut=40, powerline=60)
-
-    if add_dwt:
-        sig = dwt_denoise(sig, wavelet=wavelet)
-
+    # krok 4 – NK baseline filter
     sig = nk.ecg_clean(sig, fs, method=nk_method, powerline=60)
-    print("filter done")
+
     return sig
 
 

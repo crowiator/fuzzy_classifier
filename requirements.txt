@@ -10,3 +10,5 @@ numpy
 neurokit2
 pywt
 networkx
+tqdm
+imodels

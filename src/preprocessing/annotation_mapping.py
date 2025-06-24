@@ -1,4 +1,5 @@
 # preprocessing/annotation_mapping.py
+import logging
 # Definovanie mapovania jednotlivých MIT-BIH anotácií
 # na požadované 5 triedy: N, S, V, F, Q
 ANNOTATION_MAP = {
@@ -32,9 +33,13 @@ ANNOTATION_MAP = {
 
 
 def map_mitbih_annotation(symbol: str) -> str:
+
     """
     Funkcia premapuje jeden MIT-BIH symbol na jednu z piatich tried:
     N (normálny), S (supraventrikulárny), V (ventrikulárny),
     F (fúzny), Q (neznámy).
     """
-    return ANNOTATION_MAP.get(symbol, 'Q')  # Ak symbol nie je v mape, vráti 'Q' ako neznámu triedu
+    if symbol not in ANNOTATION_MAP:
+        logging.warning(f"Neznámy symbol: '{symbol}', zaradený do triedy Q")
+        return 'Q'
+    return ANNOTATION_MAP[symbol] # Ak symbol nie je v mape, vráti 'Q' ako neznámu triedu
