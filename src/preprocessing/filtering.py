@@ -1,12 +1,22 @@
-# ── src/preprocessing/filtering.py ───────────────────────────────────────────
+# preprocessing/filtering.py
 from __future__ import annotations
 from typing import Literal, Any
 import numpy as np
 import neurokit2 as nk
 import pywt
 
-
-# ───────────── 1. kompletné spracovanie (df + info)  ─────────────
+"""
+Viacstupňové predspracovanie EKG signálu pre analýzu a klasifikáciu
+--------------------------------------------------------------------
+* Obsahuje kombinovateľné kroky: band-pass filtráciu, notch filter, waveletové denoising a korekciu bazálnej línie.
+* Podporuje rôzne metódy čistenia a detekcie R-vrcholov (napr. Pan-Tompkins, Neurokit).
+* Waveletové denoising pomocou DWT zachováva morfológiu vĺn a redukuje šum bez deformácie QRS komplexu.
+* Funkcia `clean_ecg_v2` predstavuje odporúčaný „preset“ pre robustné predspracovanie signálu z MIT-BIH databázy.
+* Výstupné signály sú vhodné pre ďalšiu analýzu: extrakciu príznakov, klasifikáciu úderov, vizualizáciu a interpretáciu.
+"""
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. Kompletné spracovanie EKG signálu – výstup je DataFrame s črtami a slovník s informáciami
+# ─────────────────────────────────────────────────────────────────────────────
 def process_full(
         signal: np.ndarray,
         fs: int,
@@ -21,7 +31,10 @@ def process_full(
     return nk.ecg_process(signal, sampling_rate=fs, method=method, **kwargs)
 
 
-# ───────────── 2. len čistenie  ──────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. Čistenie signálu pomocou zabudovaných filtrov NeuroKit2
+# ─────────────────────────────────────────────────────────────────────────────
+
 def clean_only(
         signal: np.ndarray,
         fs: int,
@@ -31,8 +44,8 @@ def clean_only(
         **kwargs: Any,
 ) -> np.ndarray:
     """
-    High-pass (0.5 Hz) + power-line filter (50/60 Hz) podľa zvoleného
-    „method“.  Vráti prefiltrovaný signál.
+    Použije high-pass filter (0.5 Hz) a power-line notch filter (napr. 50/60 Hz),
+    podľa zvoleného „method“. Výstupom je prefiltrovaný signál.
     """
     return nk.ecg_clean(
         signal,
@@ -43,7 +56,9 @@ def clean_only(
     )
 
 
-# ───────────── 3. detekcia R-vrcholov  ───────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. Detekcia R-vrcholov (R-peaks) v už prefiltrovanom signále
+# ─────────────────────────────────────────────────────────────────────────────
 def detect_rpeaks(
         clean_signal: np.ndarray,
         fs: int,
@@ -53,15 +68,18 @@ def detect_rpeaks(
         **kwargs: Any,
 ) -> tuple[dict, dict]:
     """
-    Volá nk.ecg_peaks(); očakáva už prefiltrovaný signál.
-    → vracia (rpeaks_dict, info_dict)
-    """
+        Volá nk.ecg_peaks() na detekciu R-vrcholov.
+        Predpokladá, že vstupný signál je už prefiltrovaný.
+        Výstupom je dvojica: (slovník s R-peaks, informačný slovník)
+        """
     return nk.ecg_peaks(
         clean_signal, sampling_rate=fs, method=method, **kwargs
     )
 
 
-# ───────────── 4. vlastné band / notch filtre  ──────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. Vlastný (customizovateľný) filter – band-pass, notch, FIR/Butterworth
+# ─────────────────────────────────────────────────────────────────────────────
 def custom_filter(
         signal: np.ndarray,
         fs: int,
@@ -74,8 +92,9 @@ def custom_filter(
         **kwargs: Any,
 ) -> np.ndarray:
     """
-    Univerzálna obálka na nk.signal_filter() – podporuje band-pass,
-    low-/high-pass aj notch.
+    Univerzálny obal pre nk.signal_filter().
+    Umožňuje kombinovať rôzne typy filtrov – lowpass, highpass, bandpass, notch.
+    Vhodné na presné doladenie filtrácie podľa typu šumu alebo diagnostickej potreby.
     """
     return nk.signal_filter(
         signal,
@@ -88,15 +107,22 @@ def custom_filter(
         **kwargs,
     )
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. Waveletové denoising (DWT)
+# 5. Waveletové denoising – založené na diskrétnej waveletovej transformácii (DWT)
 # ─────────────────────────────────────────────────────────────────────────────
 def dwt_denoise(
-    signal: np.ndarray,
-    wavelet: str = "db6",
-    level: int | None = None,
-    mode: Literal["soft", "hard"] = "soft",
+        signal: np.ndarray,
+        wavelet: str = "db6",
+        level: int | None = None,
+        mode: Literal["soft", "hard"] = "soft",
 ) -> np.ndarray:
+    """
+       Aplikuje denoising pomocou prahovania waveletových koeficientov.
+       - Detaily s malou amplitúdou sa potlačia (soft/hard thresholding)
+       - Zachováva morfológiu vĺn, najmä QRS
+       - Odporúčaný wavelet: 'db6' pre EKG
+       """
     coeffs = pywt.wavedec(signal, wavelet=wavelet, level=level)
     sigma = np.median(np.abs(coeffs[-1])) / 0.6745
     uthresh = sigma * np.sqrt(2 * np.log(len(signal)))
@@ -108,11 +134,10 @@ def dwt_denoise(
     recon = pywt.waverec(new_coeffs, wavelet)
     return recon[: len(signal)].astype(signal.dtype, copy=False)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. Kombinovaná funkcia clean_ecg_v2
-#    (band-pass → notch → DWT → nk.ecg_clean)
-# ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Kombinovaná funkcia clean_ecg_v2 – odporúčaný „preset“ filtrácie signálu
+# ─────────────────────────────────────────────────────────────────────────────
 
 def clean_ecg_v2(
         signal: np.ndarray,
@@ -123,11 +148,13 @@ def clean_ecg_v2(
         nk_method: str = "neurokit",
 ) -> np.ndarray:
     """
-    Odporúčaný preset:
-        1) band-pass 0.5–40 Hz
-        2) notch 50 Hz
-        3) (voliteľne) DWT denoising
-        4) NeuroKit2 ecg_clean (bazálna línia)
+    Odporúčané predspracovanie EKG signálu:
+    1) Band-pass 0.5–40 Hz → odstráni pomalé zmeny a vysokofrekvenčný šum
+    2) Notch filter 50/60 Hz → odstránenie sieťového rušenia
+    3) (voliteľne) Wavelet DWT denoising → jemné potlačenie šumu
+    4) NeuroKit2 ecg_clean → korekcia bazálnej línie
+
+    Výstupom je robustne prefiltrovaný signál pripravený na analýzu.
     """
     # krok 1 + 2 (band-pass + notch)
     sig = custom_filter(signal, fs, lowcut=0.5, highcut=40, powerline=60)
@@ -142,8 +169,11 @@ def clean_ecg_v2(
     return sig
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. Alternatívna verzia clean_ecg pre MIT-BIH databázu
+# ─────────────────────────────────────────────────────────────────────────────
 def mitbih_filter(signal, fs=360):
     sig = custom_filter(signal, fs, lowcut=0.5, highcut=40, powerline=60)
     sig = dwt_denoise(sig, wavelet="db6")
-    sig = clean_only(sig, fs, powerline=60)        # NK2 final pass
+    sig = clean_only(sig, fs, powerline=60)  # NK2 final pass
     return sig

@@ -1,7 +1,16 @@
 # preprocessing/annotation_mapping.py
+#https://www.researchgate.net/figure/Heartbeat-annotations-in-MIT-BIH-dataset-according-to-AAMI-EC-57-The-consolidated_fig1_372894714
 import logging
-# Definovanie mapovania jednotlivých MIT-BIH anotácií
-# na požadované 5 triedy: N, S, V, F, Q
+"""
+Mapovanie anotácií MIT-BIH databázy do štandardizovaných AAMI tried
+-------------------------------------------------------------------
+* MIT-BIH Arrhythmia databáza obsahuje viac ako 15 rôznych typov úderov.
+* Táto mapa prevádza každý symbol na jednu z 5 hlavných tried podľa odporúčania AAMI: N, S, V, F, Q.
+* Funkcia `map_mitbih_annotation()` zabezpečuje konzistentnú klasifikáciu aj pre zriedkavé alebo chybné anotácie.
+* Neznáme alebo chýbajúce symboly sú automaticky zaradené do triedy Q a zaznamenané do logu.
+* Modul je kľúčový pre prípravu trénovacích a testovacích dát pre klasifikačné modely.
+"""
+
 ANNOTATION_MAP = {
     # Skupina N (Normálny úder)
     'N': 'N',  # Normálny úder
@@ -25,21 +34,23 @@ ANNOTATION_MAP = {
     'F': 'F',  # Fúzia ventrikulárneho a normálneho úderu
 
     # Skupina Q (Neznáme alebo neklasifikovateľné údery)
-    'P': 'Q',  # Stimulovaný (paced) úder
-    '/': 'Q',  # Stimulovaný úder (označený lomkou)
-    'f': 'Q',  # Fúzia stimulovaného a normálneho úderu
-    'U': 'Q'   # Neklasifikovateľný úder
+    '/': 'Q',   # Paced beat
+    'f': 'Q',   # Fusion of paced and normal beat
+    'Q': 'Q',   # Unknown/unclassified beat
+    '?': 'Q',   # Questionable beat
+    '|': 'Q'    # Isolated QRS-like artifact
 }
 
 
 def map_mitbih_annotation(symbol: str) -> str:
+    """
+       Funkcia mapuje MIT-BIH anotáciu (napr. 'N', 'V', 'J', '?')
+       na jednu zo štandardizovaných tried AAMI: N, S, V, F, Q.
 
-    """
-    Funkcia premapuje jeden MIT-BIH symbol na jednu z piatich tried:
-    N (normálny), S (supraventrikulárny), V (ventrikulárny),
-    F (fúzny), Q (neznámy).
-    """
+       V prípade, že symbol nie je známy, zaradí ho do triedy 'Q' (neznáme),
+       a zároveň vypíše varovanie do logu.
+       """
     if symbol not in ANNOTATION_MAP:
         logging.warning(f"Neznámy symbol: '{symbol}', zaradený do triedy Q")
         return 'Q'
-    return ANNOTATION_MAP[symbol] # Ak symbol nie je v mape, vráti 'Q' ako neznámu triedu
+    return ANNOTATION_MAP[symbol]

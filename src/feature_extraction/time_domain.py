@@ -1,126 +1,136 @@
+# feature_extraction/time_domain.py
 """
-Robust beat-wise feature extraction for the MIT-BIH Arrhythmia database.
------------------------------------------------------------------------
-* Zachováva *všetky* údery vrátane atypických (dôležité pre AAMI triedu Q).
-* Pridáva flagy kvality namiesto tvrdého filtra – model (fuzzy/ML) sa rozhodne sám.
-* Voliteľný robust-z scaling a clipping extrémov.
-* Žiadne IndexError: čítanie amplitúd bezpečne ošetrené.
+Robustná extrakcia príznakov z jednotlivých srdcových úderov pre databázu MIT-BIH Arrhythmia.
+-------------------------------------------------------------------------------------------
+* Zachováva všetky údery vrátane atypických (napr. artefakty, šum), čo je kľúčové pre reprezentáciu triedy Q (neklasifikovateľné).
+* Namiesto tvrdého filtrovania používa flagy kvality, ktoré ponechávajú rozhodovanie na klasifikačnom systéme (napr. fuzzy alebo ML).
+* Umožňuje voliteľné škálovanie a orezávanie extrémnych hodnôt.
+* Ošetruje prístup k signálu bezpečne (žiadne výnimky pri čítaní mimo rozsahu).
 """
-from __future__ import annotations
 
-from typing import Final
+from __future__ import annotations
 import numpy as np
 import pandas as pd
 import neurokit2 as nk
-
+from typing import Final
 from src.preprocessing.filtering import clean_ecg_v2
+import matplotlib
+
+matplotlib.use("Agg")
 
 # ---------------------------------------------------------------------------
-#  Prahové konstanty (dospelý, MIT-BIH, fs≈360 Hz)
+#  Definícia klinicky relevantných prahových hodnôt (pre dospelých pacientov)
 # ---------------------------------------------------------------------------
-MIN_QRS_MS:   Final = 50
-MAX_QRS_MS:   Final = 300
-MIN_PR_MS:    Final = 50
-MAX_PR_MS:    Final = 400
-MIN_RR_S:     Final = 0.25
-MAX_RR_S:     Final = 4.0
-MAX_R_AMP_MV: Final = 5.0      # po prefiltri; raw amplitúda je v r_amp_raw
-PAC_RATIO:    Final = 0.8      # RR1/RR0 < 0.8 => potenciálny PAC
+MIN_QRS_MS: Final = 50
+MAX_QRS_MS: Final = 300
+MIN_PR_MS: Final = 50
+MAX_PR_MS: Final = 400
+MIN_RR_S: Final = 0.25
+MAX_RR_S: Final = 4.0
+MAX_R_AMP_MV: Final = 5.0  # po prefiltri; raw amplitúda je v r_amp_raw
+PAC_RATIO: Final = 0.8  # RR1/RR0 < 0.8 => potenciálny PAC
 
 __all__ = ["extract_beats", "add_quality_flags"]
+
 
 # ---------------------------------------------------------------------------
 #  Pomocné funkcie
 # ---------------------------------------------------------------------------
 
 def _safe_amp(sig: np.ndarray, idx: float | int | np.floating) -> float:
-    """Bezpečne vráti amplitúdu alebo NaN, ak index leží mimo signálu."""
-    # Metóda np.isfinite() z knižnice NumPy slúži na zistenie, či je daná hodnota konečné číslo
+    """Bezpečný prístup k hodnote signálu na danom indexe.
+        V prípade, že index leží mimo rozsahu, funkcia vráti NaN.
+    """
     if np.isfinite(idx):
         i = int(round(idx))
-        if 0 <= i < sig.shape[0]: # sig.shape[0] - dlzka signalu
+        if 0 <= i < sig.shape[0]:  # sig.shape[0] - dlzka signalu
             return float(sig[i])
     return np.nan
 
 
 def _nearest(left: np.ndarray, right: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Ku každému prvku *left* nájdi najbližší menší a väčší index v *right*."""
+    """Pre každý prvok v poli 'left' nájde najbližší menší (lo) a väčší (hi) index z poľa 'right'.
+    Používa sa napr. na určenie okolia R-peaku v rámci QRS komplexu.
+    """
     lo, hi = [], []
     for x in left:
-        a = right[right < x] # všetky prvky v right, ktoré sú menšie ako x
-        b = right[right > x] # všetky prvky v right, ktoré sú väčšie ako x
+        a = right[right < x]  # všetky prvky v right, ktoré sú menšie ako x
+        b = right[right > x]  # všetky prvky v right, ktoré sú väčšie ako x
         lo.append(a[-1] if a.size else np.nan)  # posledný menší (teda najbližší menší)
-        hi.append(b[0]  if b.size else np.nan)  # prvý väčší (teda najbližší väčší)
+        hi.append(b[0] if b.size else np.nan)  # prvý väčší (teda najbližší väčší)
     return np.asarray(lo, dtype=float), np.asarray(hi, dtype=float)
+
 
 # ---------------------------------------------------------------------------
 #  Hlavná funkcia – beat-wise extrakcia
 # ---------------------------------------------------------------------------
 
 def extract_beats(
-    raw_sig: np.ndarray,
-    fs: int,
-    *,
-    r_idx: np.ndarray,
-    zscore_amp: bool = False,
-    clip_extremes: bool = False,
+        raw_sig: np.ndarray,
+        fs: int,
+        *,
+        r_idx: np.ndarray,
+        clip_extremes: bool = False,
 ) -> pd.DataFrame:
-    """Vráti DataFrame s beat-wise príznakmi (R/P/T amplitúdy, RR, HR, QRS…)."""
+    """Extrakcia morfologických a časových čŕt pre každý úder EKG.
 
-    # 1) prefiltrovanie & voliteľný robust-z
+    Parametre:
+    - raw_sig: surový signál
+    - fs: vzorkovacia frekvencia (Hz)
+    - r_idx: detegované R-vrcholové indexy
+    - clip_extremes: ak True, extrémne hodnoty sa orežú na definované hranice
+
+    Výstup:
+    - DataFrame, kde každý riadok reprezentuje jeden srdcový úder
+    """
+
+    # 1) Prefiltrovanie signálu (vrátane DWT komponentu)
     clean_pref = clean_ecg_v2(raw_sig, fs, add_dwt=True)
     clean = clean_pref.copy()
-    if zscore_amp:
-        med = np.median(clean)
-        mad = np.median(np.abs(clean - med)) or 1.0
-        clean = (clean - med) / mad
 
     if len(r_idx) < 3:
         return pd.DataFrame()
 
-    # 2) delineácia ⇒ binárne stĺpce (rovnako dlhé ako signál)
-    waves, _ = nk.ecg_delineate(clean, rpeaks=r_idx, sampling_rate=fs, method="dwt")
+    # 2) Delineácia P/Q/R/S/T vĺn pomocou NeuroKit2
+    waves, _ = nk.ecg_delineate(clean, rpeaks=r_idx, sampling_rate=fs, method="peak")
+    p_peaks_idx = np.where(waves["ECG_P_Peaks"].to_numpy() == 1)[0]
+    t_peaks_idx = np.where(waves["ECG_T_Peaks"].to_numpy() == 1)[0]
+    # QRS začína od Q-peaku a končí na S-peaku
+    q_peaks_idx = np.where(waves["ECG_Q_Peaks"].to_numpy() == 1)[0]
+    s_peaks_idx = np.where(waves["ECG_S_Peaks"].to_numpy() == 1)[0]
 
-    r_on_idx   = np.where(waves["ECG_R_Onsets" ].to_numpy() == 1)[0]
-    print(f"r_on_idx: {len(r_on_idx)}")
-    r_off_idx  = np.where(waves["ECG_R_Offsets"].to_numpy() == 1)[0]
-    print(f"r_off_idx: {len(r_off_idx)}")
-    p_peaks_idx = np.where(waves["ECG_P_Peaks" ].to_numpy() == 1)[0]
-    print(f"p_peaks_idx: {len(p_peaks_idx)}")
-    t_peaks_idx = np.where(waves["ECG_T_Peaks" ].to_numpy() == 1)[0]
-    print(f"t_peaks_idx: {len(t_peaks_idx)}")
+    # 3) Nájdeme najbližšie Q a S ku každému R-peaku (začiatok a koniec QRS komplexu)
+    r_on_corr, _ = _nearest(r_idx, q_peaks_idx)
+    _, r_off_corr = _nearest(r_idx, s_peaks_idx)
 
-    # 3) priradenie onset/offset ku každému R-peaku
-    #r_on_corr = najbližší onset PRED každým R-peakom - (teda začiatok QRS pre daný úder).
-    # r_off_corr = najbližší offset ZA každým R-peakom -(koniec QRS pre daný úder)
-    r_on_corr, r_off_corr = _nearest(r_idx, r_on_idx)[0], _nearest(r_idx, r_off_idx)[1]
     rows: list[dict] = []
     for i, r in enumerate(r_idx):
-        # RR & HR
+        # Výpočet RR intervalov (RR0 – predchádzajúci, RR1 – nasledujúci) a HR
         rr0 = (r - r_idx[i - 1]) / fs if i else np.nan
         rr1 = (r_idx[i + 1] - r) / fs if i < len(r_idx) - 1 else np.nan
         hr_bpm = 60 / rr0 if np.isfinite(rr0) and rr0 > 0 else np.nan
 
-        # QRS duration
+        # Výpočet trvania QRS komplexu (v ms)
         qrs_ms = ((r_off_corr[i] - r_on_corr[i]) / fs * 1_000
-                   if np.isfinite(r_on_corr[i]) and np.isfinite(r_off_corr[i]) else np.nan)
+                  if np.isfinite(r_on_corr[i]) and np.isfinite(r_off_corr[i]) else np.nan)
 
-        # amplitúdy
+        # Amplitúdy P, R a T vĺn (bezpečne)
         r_amp_raw = _safe_amp(clean_pref, r)
         r_amp = _safe_amp(clean, r)
         p_candidates = p_peaks_idx[p_peaks_idx < r]
         t_candidates = t_peaks_idx[t_peaks_idx > r]
         p_amp = _safe_amp(clean, p_candidates[-1]) if p_candidates.size else np.nan
-        t_amp = _safe_amp(clean, t_candidates[0])  if t_candidates.size else np.nan
+        t_amp = _safe_amp(clean, t_candidates[0]) if t_candidates.size else np.nan
 
-        # PR interval & early-P
+        # PR interval (čas medzi P a R) a identifikácia predčasných P vĺn
         pr_ms = ((r - p_candidates[-1]) / fs * 1_000) if p_candidates.size else np.nan
         early_p = float(0 < pr_ms < 120) if np.isfinite(pr_ms) else np.nan
 
-        # PAC flag
+        # Identifikácia potenciálneho PAC (predčasný predsieňový úder)
         rr_ratio = rr1 / rr0 if np.isfinite(rr0) and np.isfinite(rr1) and rr0 > 0 else np.nan
         is_pac = float(rr_ratio < PAC_RATIO) if np.isfinite(rr_ratio) else np.nan
 
+        # Príznaky úderu – pridanie do výstupného zoznamu
         rows.append({
             "beat_idx": i,
             "R_sample": int(r),
@@ -141,15 +151,15 @@ def extract_beats(
 
     df = pd.DataFrame(rows)
 
-    # 4) clipping extrémov (voliteľné)
+    # 4) Voliteľné orezanie extrémnych hodnôt podľa klinických hraníc
     if clip_extremes and not df.empty:
         df["QRSd_ms"] = df["QRSd_ms"].clip(MIN_QRS_MS, MAX_QRS_MS)
-        df["PR_ms" ]  = df["PR_ms" ].clip(MIN_PR_MS,  MAX_PR_MS)
+        df["PR_ms"] = df["PR_ms"].clip(MIN_PR_MS, MAX_PR_MS)
         df[["R_amplitude", "P_amplitude", "T_amplitude"]] = (
             df[["R_amplitude", "P_amplitude", "T_amplitude"]].clip(-MAX_R_AMP_MV, MAX_R_AMP_MV)
         )
 
-    # 5) typy
+    # 5) Optimalizácia dátových typov pre nižšiu pamäťovú náročnosť
     if not df.empty:
         float_cols = df.select_dtypes(float).columns
         df[float_cols] = df[float_cols].astype("float32")
@@ -157,8 +167,9 @@ def extract_beats(
 
     return df
 
+
 # ---------------------------------------------------------------------------
-#  Quality flags
+#  Pridanie flagov kvality signálu
 # ---------------------------------------------------------------------------
 
 def add_quality_flags(df: pd.DataFrame) -> pd.DataFrame:
@@ -167,10 +178,10 @@ def add_quality_flags(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.copy()
     df["qrs_out_rng"] = ~df["QRSd_ms"].between(MIN_QRS_MS, MAX_QRS_MS)
-    df["pr_out_rng" ] = ~df["PR_ms" ].between(MIN_PR_MS, MAX_PR_MS)
+    df["pr_out_rng"] = ~df["PR_ms"].between(MIN_PR_MS, MAX_PR_MS)
     rr_ok = df["RR0_s"].between(MIN_RR_S, MAX_RR_S) & df["RR1_s"].between(MIN_RR_S, MAX_RR_S)
     df["rr_out_rng"] = ~rr_ok
-    df["ramp_high"]  = df["r_amp_raw"].abs() > MAX_R_AMP_MV
+    df["ramp_high"] = df["r_amp_raw"].abs() > MAX_R_AMP_MV
     df["pt_missing"] = df["P_amplitude"].isna() | df["T_amplitude"].isna()
 
     df["sig_bad"] = df[[
@@ -178,7 +189,3 @@ def add_quality_flags(df: pd.DataFrame) -> pd.DataFrame:
     ]].any(axis=1)
 
     return df
-
-left = np.array([10, 20, 30])
-right = np.array([5, 15, 25, 35])
-print(_nearest(left, right))
