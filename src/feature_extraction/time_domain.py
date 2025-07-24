@@ -1,4 +1,4 @@
-# feature_extraction/time_domain.py
+
 """
 Robustná extrakcia príznakov z jednotlivých srdcových úderov pre databázu MIT-BIH Arrhythmia.
 -------------------------------------------------------------------------------------------

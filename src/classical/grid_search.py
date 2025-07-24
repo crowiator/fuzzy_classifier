@@ -1,40 +1,31 @@
 """
-Grid Search a vyhodnotenie tradičných klasifikátorov na EKG dátach
+Tento skript slúži na optimalizáciu hyperparametrov klasických klasifikačných modelov (RandomForest, KNN, DecisionTree)
+pomocou GridSearchCV na dátach z MIT-BIH Arrhythmia databázy. Využíva paralelizáciu na zrýchlenie procesu optimalizácie.
 
-Tento skript vykonáva tréning a optimalizáciu hyperparametrov tradičných klasifikačných algoritmov
-(Random Forest, SVM, KNN, Decision Tree) pomocou GridSearchCV nad extrahovanými príznakmi EKG signálu
-z MIT-BIH databázy. Používa dva datasety (DS1 – tréning, DS2 – test), vykonáva balansovanie tried
-a vyhodnocuje výkonnosť modelov pomocou klasifikačných metrík. Výsledky a modely sú uložené do súborov.
+Postup skriptu zahŕňa:
+- Načítanie a predspracovanie dát (imputácia a vyvažovanie dátovej množiny).
+- Paralelné vykonanie Grid Search pre každý klasifikačný model na vyvážených dátach.
+- Uloženie optimálnych parametrov, výsledkov cross-validácie a najlepších modelov.
+- Vyhodnotenie optimalizovaných modelov na testovacej množine DS2 a uloženie klasifikačných správ.
 """
 
-import numpy as np
 import pandas as pd
-from collections import Counter, defaultdict
 from sklearn.impute import SimpleImputer
-from imblearn.under_sampling import RandomUnderSampler
-from imblearn.over_sampling import BorderlineSMOTE
-from tqdm import tqdm
-import pickle
 from pathlib import Path
-from src.feature_extraction.time_domain import extract_beats
-from src.feature_extraction.transformer import FeatureExtractor
-from src.preprocessing.load import load_record
-import matplotlib
 from joblib import Parallel, delayed
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import classification_report
 import joblib
-
-matplotlib.use('Agg')  # Neinteraktívny backend
 from custom_classifier import CustomClassifier
-from src.config import LEAD, DATA_DIR, FIS_FEATURES, DS1, DS2
+from src.dataset_loader import load_ds1_ds2, balance_datav2, CACHE
 
-CACHE = Path("../fuzzy/cache")
-CACHE.mkdir(exist_ok=True)
+
 RESULTS = Path("../results")
 RESULTS.mkdir(exist_ok=True, parents=True)
+
 SCRIPT_DIR = Path(__file__).parent
 
+#  pre Grid Search Definícia klasifikačných modelov a ich hyperparametrov
 classifiers_with_params = [
     ("RandomForest", "RandomForest", {
         'n_estimators': [100, 200, 300],
@@ -60,11 +51,25 @@ classifiers_with_params = [
 
 
 def find_best_params(model_name, model_type, param_grid, X_train, y_train):
+    """
+        Vykoná optimalizáciu hyperparametrov pomocou GridSearchCV pre daný model.
+
+        Args:
+            model_name (str): Názov modelu pre ukladanie výsledkov.
+            model_type (str): Typ klasifikačného modelu (RandomForest, KNN, DecisionTree).
+            param_grid (dict): Grid parametrov pre vyhľadávanie.
+            X_train (np.ndarray): Trénovacie príznaky.
+            y_train (np.ndarray): Trénovacie labely.
+
+        Returns:
+            GridSearchCV.best_estimator_: Najlepší nájdený klasifikačný model.
+        """
+
     model = CustomClassifier(model_type=model_type)
     grid_search = GridSearchCV(model, param_grid, cv=5, scoring='f1_macro', n_jobs=-1, verbose=2)
     grid_search.fit(X_train, y_train)
 
-    print(f"✅ Najlepšie parametre pre {model_name}: {grid_search.best_params_}")
+    print(f" Optimalizované parametre pre model {model_name}: {grid_search.best_params_}")
 
     # Uloženie výsledkov
     results_df = pd.DataFrame(grid_search.cv_results_)
@@ -76,64 +81,8 @@ def find_best_params(model_name, model_type, param_grid, X_train, y_train):
     return grid_search.best_estimator_
 
 
-
-
-def build_ds(rec_ids, tag):
-    pkl_path = CACHE / f"{tag}_traditional.pkl"
-    if pkl_path.exists():
-        with open(pkl_path, "rb") as f:
-            X, y, features = pickle.load(f)
-        return X, y, features
-
-    rows, y = [], []
-    for rid in tqdm(rec_ids, desc=f"Načitávanie {tag}"):
-        rec = load_record(rid, lead=LEAD, base_dir=DATA_DIR)
-        rows.append((rec.signal, rec.fs, rec.r_peaks))
-        ref = dict(zip(rec.r_peaks, rec.labels_aami))
-        beats = extract_beats(rec.signal, rec.fs, r_idx=rec.r_peaks, clip_extremes=True)
-        y.extend([ref.get(r, "Q") for r in beats["R_sample"]])
-
-    fe = FeatureExtractor(return_array=False, impute_wavelet_only=True)
-    fe.fit(rows)
-    X_df = fe.transform(rows)[FIS_FEATURES]
-    X = X_df.to_numpy(float)
-
-    with open(pkl_path, "wb") as f:
-        pickle.dump((X, np.asarray(y), FIS_FEATURES), f)
-
-    return X, np.asarray(y), FIS_FEATURES
-
-
-def load_ds1_ds2():
-    X_tr, y_tr, feat_names = build_ds(DS1, "ds1")
-    df_tr = pd.DataFrame(X_tr, columns=feat_names)
-    X_te, y_te, _ = build_ds(DS2, "ds2")
-    df_te = pd.DataFrame(X_te, columns=feat_names)
-    return X_tr, y_tr, df_tr, X_te, y_te, df_te
-
-
-def balance_datav2(X, y):
-    print("⚖️Vyvažovanie dátovej množiny...")
-
-    imputer = SimpleImputer(strategy="median")
-    X_imp = imputer.fit_transform(X)
-
-    # Vyfiltruj všetky vzorky triedy "Q"
-    mask = y != "Q"
-    X_filtered, y_filtered = X_imp[mask], y[mask]
-
-    rus = RandomUnderSampler(sampling_strategy={'N': 4000}, random_state=42)
-    X_under, y_under = rus.fit_resample(X_filtered, y_filtered)
-
-    smote = BorderlineSMOTE(sampling_strategy='not majority', random_state=42)
-    X_bal, y_bal = smote.fit_resample(X_under, y_under)
-
-    df_bal = pd.DataFrame(X_bal, columns=FIS_FEATURES)
-    df_bal["label"] = y_bal
-    print("✅ Rozdelenie tried po vyvážení:", Counter(df_bal["label"]))
-    print("Po balansovaní:")
-    return df_bal
 def main():
+
     X_tr, y_tr, _, X_te, y_te, _ = load_ds1_ds2()
     imputer = SimpleImputer(strategy='median')
     X_tr = imputer.fit_transform(X_tr)

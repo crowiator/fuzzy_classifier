@@ -1,22 +1,18 @@
-# fuzzy_classifier.py
+
 """
-Tento skript implementuje kompletný pipeline na klasifikáciu EKG signálov pomocou fuzzy logiky.
-Kód zahŕňa načítanie a prípravu dát, tvorbu fuzzy množín, generovanie pravidiel,
+Tento skript implementuje kompletný pipeline na klasifikáciu EKG signálov pomocou fuzzy logiky (Mamdaniho FIS). 
+Kód zahŕňa načítanie a prípravu dát, tvorbu fuzzy množín, generovanie pravidiel, 
 vyvažovanie datasetu, klasifikáciu, a vyhodnotenie modelu pomocou rôznych metrík.
 """
 import sys
 from sklearn.preprocessing import label_binarize
 import os
-import matplotlib
-matplotlib.use('Agg')
 import warnings
 import numpy as np
 import pandas as pd
 from collections import defaultdict
 from joblib import Parallel, delayed
 from sklearn.impute import SimpleImputer
-from imblearn.under_sampling import RandomUnderSampler
-from imblearn.over_sampling import BorderlineSMOTE
 import skfuzzy as fuzz
 from sklearn.metrics import classification_report, f1_score, matthews_corrcoef, roc_auc_score
 import multiprocessing as mp
@@ -25,140 +21,57 @@ import matplotlib.pyplot as plt
 import pickle
 from collections import Counter
 from pathlib import Path
-from src.config import LEAD, DATA_DIR, FIS_FEATURES, DS2, DS1
-from src.feature_extraction.time_domain import extract_beats
-from src.feature_extraction.transformer import FeatureExtractor
-from src.preprocessing.load import load_record
+from src.config import FIS_FEATURES
 import seaborn as sns
 from sklearn.metrics import confusion_matrix
-
+from src.dataset_loader import load_ds1_ds2, balance_datav2, CACHE
+import matplotlib
+matplotlib.use('Agg')
 
 sys.modules['tkinter'] = None
 sys.modules['_tkinter'] = None
 os.environ["MPLBACKEND"] = "Agg"
-CACHE = Path("cache")
-CACHE.mkdir(exist_ok=True)
+
 PLOTS_DIR = Path("plots")
 PLOTS_DIR.mkdir(exist_ok=True)
 LABELS = ["N", "S", "V", "F"]  # "Q"
 IDX2LBL = {i + 1: lbl for i, lbl in enumerate(LABELS)}
+# Stabilné definovanie koreňového adresára projektu
 
-
-def build_ds(rec_ids, tag):
-    """
-        Načíta a spracuje záznamy EKG podľa zoznamu identifikátorov (rec_ids),
-        extrahuje príznaky pre fuzzy klasifikáciu a vygeneruje príslušné labely.
-
-        Ak už existuje cacheovaný .pkl súbor pre daný tag, načíta sa z disku.
-
-        Args:
-            rec_ids (list[str]): Zoznam ID záznamov (napr. ['100', '101', ...])
-            tag (str): Označenie sady (napr. 'ds1' alebo 'ds2') pre cacheovanie
-
-        Returns:
-            X (np.ndarray): Pole tvaru (n_samples, n_features) – príznaky
-            y (np.ndarray): Pole tvaru (n_samples,) – triedy (napr. 'N', 'V', ...)
-            features (list[str]): Zoznam použitých príznakov
-        """
-    # Skontroluj, či cacheovaný súbor existuje
-    pkl_path = CACHE / f"{tag}_traditional.pkl"
-    if pkl_path.exists():
-        with open(pkl_path, "rb") as f:
-            X, y, features = pickle.load(f)
-        return X, y, features
-
-    rows, y = [], []
-
-    # Iterácia cez všetky záznamy (napr. pacientov)
-    for rid in tqdm(rec_ids, desc=f"Loading {tag}"):
-        # Načítaj záznam (signál, sampling rate, R-vlny)
-        rec = load_record(rid, lead=LEAD, base_dir=DATA_DIR)
-        rows.append((rec.signal, rec.fs, rec.r_peaks))
-        # Vytvor mapovanie R-vĺn na AAMI labely
-        ref = dict(zip(rec.r_peaks, rec.labels_aami))
-        # Extrahuj jednotlivé údery zo signálu (okolo R-vĺn)
-        beats = extract_beats(rec.signal, rec.fs, r_idx=rec.r_peaks, clip_extremes=True)
-        # Získaj labely pre každý beat podľa R_sample, fallback = 'Q'
-        y.extend([ref.get(r, "Q") for r in beats["R_sample"]])
-
-    # Inicializuj extraktor čŕt (FeatureExtractor)
-    fe = FeatureExtractor(return_array=False, impute_wavelet_only=True)
-    fe.fit(rows)
-    # Extrahuj črty a ponechaj len tie, ktoré sú relevantné pre fuzzy klasifikáciu
-    X_df = fe.transform(rows)[FIS_FEATURES]
-    X = X_df.to_numpy(float)
-
-    # Ulož výsledky do cache (na budúce rýchle načítanie)
-    with open(pkl_path, "wb") as f:
-        pickle.dump((X, np.asarray(y), FIS_FEATURES), f)
-    return X, np.asarray(y), FIS_FEATURES
-
-
-def load_ds1_ds2():
-    """
-        Načíta a spracuje trénovaciu (DS1) aj testovaciu (DS2) množinu z MIT-BIH databázy.
-        Volá funkciu build_ds pre obe množiny a zároveň vracia aj Pandas DataFrame verzie dát.
-
-        Returns:
-            X_tr (np.ndarray): Trénovacie príznaky
-            y_tr (np.ndarray): Trénovacie triedy
-            df_tr (pd.DataFrame): Trénovacie dáta ako DataFrame (na vizualizáciu, MF generáciu, atď.)
-            X_te (np.ndarray): Testovacie príznaky
-            y_te (np.ndarray): Testovacie triedy
-            df_te (pd.DataFrame): Testovacie dáta ako DataFrame
-        """
-    # Načítanie trénovacej množiny (DS1)
-    X_tr, y_tr, feat_names = build_ds(DS1, "ds1")
-    df_tr = pd.DataFrame(X_tr, columns=feat_names)
-
-    # Načítanie testovacej množiny (DS2)
-    X_te, y_te, _ = build_ds(DS2, "ds2")
-    df_te = pd.DataFrame(X_te, columns=feat_names)
-
-    # Vráti oba datasety vo formáte ndarray aj ako DataFrame
-    return X_tr, y_tr, df_tr, X_te, y_te, df_te
 
 
 def create_fuzzy_mfs(feature, data, num_mfs):
     """
     Vytvorí fuzzy členitostné funkcie pre zvolenú črtu (feature) pomocou c-means clusteringu.
-    Fuzzy množiny sú pomenované podľa domény črty (napr. 'veľmi nízka', 'nízka', ...).
+    Funkcie členstva sú typu Gauss alebo Trojuholník podľa typu črty.
 
     Args:
         feature (str): Názov črty (napr. 'Heart_rate_bpm')
         data (np.ndarray): Hodnoty črty
-        num_mfs (int): Počet fuzzy množín (zvyčajne 5)
+        num_mfs (int): Počet fuzzy množín
 
     Returns:
-        universe (np.ndarray): Diskretizovaný interval hodnôt
-        mfs (dict): Slovník fuzzy množín {meno: členitostná funkcia}
+        universe (np.ndarray): Diskretizovaný rozsah hodnôt
+        mfs (dict): Slovník názvov fuzzy množín s funkciami členstva
     """
 
-    # Typy čŕt, ktoré budú mať pomenované fuzzy množiny typu "nízky-vysoký"
+    GAUSS_FEATURES = ["P_amplitude", "T_amplitude", "Heart_rate_bpm", "PR_ms"]
     VALUE_FEATURES = ["P_amplitude", "T_amplitude", "Heart_rate_bpm", "R_amplitude"]
-    INTERVAL_FEATURES = ["RR0_s", "RR1_s"]
+    INTERVAL_FEATURES = ["RR0_s", "RR1_s", "PR_ms"]
 
-    # Odstráň NaN hodnoty
     data = data[~np.isnan(data)]
-
-    # Automatický clustering (c-means) pre určenie stredov MF
     cntr, *_ = fuzz.cluster.cmeans(data.reshape(1, -1), c=num_mfs, m=2, error=0.005, maxiter=1000)
     cntr = np.sort(cntr.flatten())
-
-    # Vytvor univerzum hodnôt (na výpočet a vykreslenie MF)
     universe = np.linspace(np.min(data), np.max(data), 256)
 
-    # Pomenovania množín podľa typu črty
     if feature in VALUE_FEATURES:
-        mf_names = ["veľmi nízka", "nízka", "stredná", "vysoká", "veľmi vysoká"]
+        mf_names = ["veľmi nízka", "nízka", "stredná", "vysoká", "veľmi vysoká"][:num_mfs]
     elif feature in INTERVAL_FEATURES:
-        mf_names = ["veľmi krátky", "krátky", "stredný", "dlhý", "veľmi dlhý"]
+        mf_names = ["veľmi krátky", "krátky", "stredný", "dlhý", "veľmi dlhý"][:num_mfs]
     else:
         mf_names = [f"mf{i+1}" for i in range(num_mfs)]
 
     mfs = {}
-
-    # Generovanie jednotlivých MF
     for i, center in enumerate(cntr):
         if i == 0:
             a, b, c = np.min(data), center, cntr[i + 1]
@@ -167,7 +80,7 @@ def create_fuzzy_mfs(feature, data, num_mfs):
         else:
             a, b, c = cntr[i - 1], center, cntr[i + 1]
 
-        if feature in VALUE_FEATURES:
+        if feature in GAUSS_FEATURES:
             sigma = (c - a) / 4
             mfs[mf_names[i]] = fuzz.gaussmf(universe, b, sigma)
         else:
@@ -176,43 +89,38 @@ def create_fuzzy_mfs(feature, data, num_mfs):
     return universe, mfs
 
 
+
 def generate_all_mfs(df, normalize=False, num_mfs=5):
     """
-    Vygeneruje všetky fuzzy množiny (členitostné funkcie) pre každú vstupnú črtu v DataFrame.
-    Výsledky sa ukladajú do cache súboru (.pkl), aby sa nemuseli opakovane počítať.
+        Vygeneruje všetky fuzzy množiny (členitostné funkcie) pre každú vstupnú črtu v DataFrame.
+        Výsledky sa ukladajú do cache súboru (.pkl), aby sa nemuseli opakovane počítať.
 
-    Args:
-        df (pd.DataFrame): DataFrame s extrahovanými príznakmi (napr. z DS1)
-        normalize (bool): Ak je True, normalizuje črty do rozsahu [0, 1]
-        num_mfs (int): Počet fuzzy množín na jednu črtu (typicky 5)
+        Args:
+            df (pd.DataFrame): DataFrame s extrahovanými príznakmi (napr. z DS1)
+            normalize (bool): Ak je True, normalizuje črty do rozsahu [0, 1]
+            num_mfs (int): Počet fuzzy množín na jednu črtu (typicky 5)
 
-    Returns:
-        fuzzy_mfs (dict): Slovník fuzzy množín pre každú črtu.
-                          Každý prvok obsahuje 'universe' a 'mfs'.
-    """
-
+        Returns:
+            fuzzy_mfs (dict): Slovník fuzzy množín pre každú črtu.
+                              Každý prvok obsahuje 'universe' a 'mfs'.
+        """
     # Zvoľ názov cache súboru podľa toho, či sa použije normalizácia
     fname = "fuzzy_mfs_norm.pkl" if normalize else "fuzzy_mfs_orig.pkl"
     path = CACHE / fname
-
     # Ak súbor už existuje, načítaj uložené fuzzy množiny
     if path.exists():
         with open(path, "rb") as f:
             return pickle.load(f)
 
     fuzzy_mfs = {}
-
     # Iteruj cez všetky črty, pre ktoré chceme generovať fuzzy množiny
     for feature in FIS_FEATURES:
         data = df[feature].values
-
         # Voliteľná normalizácia črty do rozsahu [0, 1]
         if normalize:
             data = (data - np.min(data)) / (np.max(data) - np.min(data) + 1e-6)
-
         # Vytvor universe a fuzzy množiny pre danú črtu
         universe, mfs = create_fuzzy_mfs(feature, data, num_mfs=num_mfs)
-
         # Ulož do slovníka
         fuzzy_mfs[feature] = {"universe": universe, "mfs": mfs}
 
@@ -225,60 +133,53 @@ def generate_all_mfs(df, normalize=False, num_mfs=5):
 
 def generate_rule(row, fuzzy_mfs):
     """
-    Vytvorí jedno fuzzy pravidlo pre daný úder (row) na základe najviac aktivovaných fuzzy množín.
-    Pre každú črtu sa zvolí fuzzy množina (MF), ktorá má najvyšší stupeň príslušnosti.
-    Pravidlo zahŕňa len tie MF, ktoré majú aktiváciu aspoň 0.5.
+        Generuje jedno fuzzy pravidlo na základe zadaného vzorku (EKG úderu).
+        Pre každú črtu sa vyberie najvhodnejšia fuzzy množina s najvyššou mierou príslušnosti.
+        Pravidlo sa vytvára iba z tých čŕt, kde je stupeň príslušnosti >= 0.5.
 
-    Args:
-        row (dict): Jedna vzorka (napr. EKG úder) vo forme slovníka s hodnotami čŕt a triedou ("label")
-        fuzzy_mfs (dict): Slovník fuzzy množín pre každú črtu, obsahuje aj universe pre výpočty
+        Args:
+            row (dict): Jedna vzorka ako slovník (črta -> hodnota, + "label")
+            fuzzy_mfs (dict): Vygenerované fuzzy množiny pre každú črtu
 
-    Returns:
-        tuple: (pravidlo vo forme zoznamu podmienok [(črta, názov MF), ...], cieľová trieda)
-    """
-
-    # Zoznam podmienok pravidla (napr. [('RR0_s', 'stredný'), ('Heart_rate_bpm', 'vysoká')])
+        Returns:
+            tuple: ((zoznam podmienok ako (črta, fuzzy_mnozina)), trieda_label)
+        """
     rule_conditions = []
-
-    # Pre každú črtu (feature) z definovaného zoznamu vstupných príznakov
+    # Pre každú črtu použijeme príslušné fuzzy množiny
     for feature in FIS_FEATURES:
-        # Získaj univerzum a fuzzy členitostné funkcie (MFs) pre danú črtu
         universe = fuzzy_mfs[feature]['universe']
         mfs = fuzzy_mfs[feature]['mfs']
 
-        # Vypočítaj stupeň príslušnosti (μ) hodnoty z danej vzorky ku každej fuzzy množine
+        # Získaj mieru príslušnosti ku všetkým MF pre danú hodnotu
         memberships = {
             mf_name: fuzz.interp_membership(universe, mf_curve, row[feature])
             for mf_name, mf_curve in mfs.items()
         }
-
-        # Vyber MF s najvyššou mierou príslušnosti
+        # Vyber len jednu najlepšiu MF pre každú črtu
         best_mf, best_membership = max(memberships.items(), key=lambda x: x[1])
-
-        # Ak je aktivácia dostatočne vysoká (μ ≥ 0.5), pridaj do pravidla
+        # Pridaj do pravidla len ak má dostatočnú aktiváciu
         if best_membership >= 0.5:
             rule_conditions.append((feature, best_mf))
 
-    # Výstupom je tuple: pravidlo (podmienky) a trieda vzorky (napr. 'N', 'V', 'S', 'F')
+    # Výstupom je tuple s podmienkami a triedou (napr. 'N', 'V', ...)
     return tuple(rule_conditions), row["label"]
 
 
 def build_rules(df, fuzzy_mfs):
     """
-    Generuje fuzzy pravidlá z datasetu. Každý riadok (úder EKG) je spracovaný na fuzzy pravidlo
-    pomocou najviac aktivovaných fuzzy množín. Následne sa spočítajú frekvencie výskytov,
-    vypočíta sa podpora a spoľahlivosť (support a confidence), a filtrujú sa len silné pravidlá.
+        Generuje fuzzy pravidlá z datasetu. Každý riadok (úder EKG) je spracovaný na fuzzy pravidlo
+        pomocou najviac aktivovaných fuzzy množín. Následne sa spočítajú frekvencie výskytov,
+        vypočíta sa podpora a spoľahlivosť (support a confidence), a filtrujú sa len silné pravidlá.
 
-    Pravidlá sa ukladajú do súborov pre ďalšie použitie.
+        Pravidlá sa ukladajú do súborov pre ďalšie použitie.
 
-    Args:
-        df (pd.DataFrame): Vyvážený dataset s črtami a cieľovou triedou ("label")
-        fuzzy_mfs (dict): Vygenerované fuzzy členitostné funkcie pre všetky črty
+        Args:
+            df (pd.DataFrame): Vyvážený dataset s črtami a cieľovou triedou ("label")
+            fuzzy_mfs (dict): Vygenerované fuzzy členitostné funkcie pre všetky črty
 
-    Returns:
-        rules (list): Zoznam pravidiel vo formáte (conds, label, confidence)
-    """
-
+        Returns:
+            rules (list): Zoznam pravidiel vo formáte (conds, label, confidence)
+        """
     print("Prebieha generovanie fuzzy pravidiel...")
 
     # Konverzia dataframe na zoznam slovníkov (každý riadok ako dict)
@@ -288,10 +189,8 @@ def build_rules(df, fuzzy_mfs):
     results = Parallel(n_jobs=mp.cpu_count(), backend="loky")(
         delayed(generate_rule)(row, fuzzy_mfs) for row in rows
     )
-
     # Spočítanie frekvencií rovnakých pravidiel (vrátane triedy)
     rule_counts = Counter(results)
-
     # Celkový počet výskytov pravidla bez ohľadu na triedu (pre confidence)
     rule_totals = Counter([r[0] for r in results])
 
@@ -325,40 +224,41 @@ def build_rules(df, fuzzy_mfs):
     ]
 
     # Uloženie pravidiel do súboru .txt (ľahko čitateľný formát)
-    with open("fuzzy_rules.txt", "w", encoding="utf-8") as f:
+    with open("results/fuzzy_rules.txt", "w", encoding="utf-8") as f:
         f.write("Fuzzy pravidlá (podmienky => trieda):\n\n")
         for line in rule_text:
             f.write(line + "\n")
 
     # Uloženie pravidiel do súboru .pkl (na neskoré načítanie modelu)
-    with open("fuzzy_rules.pkl", "wb") as f:
+    with open("results/fuzzy_rules.pkl", "wb") as f:
         pickle.dump(rules, f)
 
-    print(f"✅ Bolo extrahovaných {len(rules)} fuzzy pravidiel.")
-    print(f"📁 Pravidlá uložené do: 'fuzzy_rules.txt' a 'fuzzy_rules.pkl'")
+    print(f"Bolo extrahovaných {len(rules)} fuzzy pravidiel.")
+    print(f"Pravidlá uložené do: 'fuzzy_rules.txt' a 'fuzzy_rules.pkl'")
 
     return rules
 
+
 def limit_rules_by_class(rules, max_per_class=300):
     """
-    Obmedzí maximálny počet fuzzy pravidiel pre každú výstupnú triedu (N, S, V, F).
-    Pravidlá sú najprv zoradené podľa spoľahlivosti (confidence) a následne sa vyberie
-    len najspoľahlivejších N pravidiel na triedu.
+      Obmedzí maximálny počet fuzzy pravidiel pre každú výstupnú triedu (N, S, V, F).
+      Pravidlá sú najprv zoradené podľa spoľahlivosti (confidence) a následne sa vyberie
+      len najspoľahlivejších N pravidiel na triedu.
 
-    Args:
-        rules (list): Zoznam fuzzy pravidiel vo formáte (podmienky, trieda, confidence)
-        max_per_class (int): Predvolený limit pre triedy, ak nie je definovaný v slovníku
+      Args:
+          rules (list): Zoznam fuzzy pravidiel vo formáte (podmienky, trieda, confidence)
+          max_per_class (int): Predvolený limit pre triedy, ak nie je definovaný v slovníku
 
-    Returns:
-        pruned (list): Zredukovaný zoznam pravidiel s aplikovanými limitmi
-    """
-
+      Returns:
+          pruned (list): Zredukovaný zoznam pravidiel s aplikovanými limitmi
+      """
+    # Priradenie maximálneho počtu pravidiel pre každú triedu
     # Vlastné maximálne počty pravidiel pre jednotlivé triedy
     max_per_class_dict = {
-        "N": 300,   # Normálne údery – najviac pravidiel
-        "S": 300,   # Supraventrikulárne údery
-        "V": 200,   # Ventrikulárne údery
-        "F": 100    # Fusion beats – zriedkavé
+        "N": 300,  # Normálne údery – najviac pravidiel
+        "S": 300,  # Supraventrikulárne údery
+        "V": 200,  # Ventrikulárne údery
+        "F": 100  # Fusion beats – zriedkavé
     }
 
     # Zoskupenie pravidiel podľa cieľovej triedy
@@ -375,9 +275,6 @@ def limit_rules_by_class(rules, max_per_class=300):
 
     print(f" Po aplikovaní limitu na počet pravidiel pre triedu zostáva {len(pruned)} pravidiel.")
     return pruned
-
-
-from itertools import product
 
 
 def mamdani_defuzzification(rule_scores, label_universe, mf_width=0.7):
@@ -420,24 +317,24 @@ def mamdani_defuzzification(rule_scores, label_universe, mf_width=0.7):
     # Vráť názov triedy podľa indexu (napr. 'N', 'S', ...)
     return LABELS[label_idx]
 
+
 def fast_fuzzy_predict(row, fuzzy_mfs, rules, mf_width=0.7):
     """
-    Vykoná inferenciu (predikciu) pre jednu vzorku pomocou fuzzy pravidiel a Mamdaniho defuzzifikácie.
+        Vykoná inferenciu (predikciu) pre jednu vzorku pomocou fuzzy pravidiel a Mamdaniho defuzzifikácie.
 
-    Args:
-        row (list or np.ndarray): Jedna vzorka s hodnotami čŕt (napr. EKG úder)
-        fuzzy_mfs (dict): Slovník fuzzy množín pre každú črtu
-        rules (list): Zoznam fuzzy pravidiel vo formáte (conds, label, confidence)
-        mf_width (float): Šírka výstupných výstupných MF pri defuzzifikácii
+        Args:
+            row (list or np.ndarray): Jedna vzorka s hodnotami čŕt (napr. EKG úder)
+            fuzzy_mfs (dict): Slovník fuzzy množín pre každú črtu
+            rules (list): Zoznam fuzzy pravidiel vo formáte (conds, label, confidence)
+            mf_width (float): Šírka výstupných výstupných MF pri defuzzifikácii
 
-    Returns:
-        predicted_label (str): Predikovaná trieda ('N', 'S', 'V', 'F')
-        applied_rule_str (str): Reprezentácia najlepšie aktivovaného pravidla pre danú triedu
-    """
+        Returns:
+            predicted_label (str): Predikovaná trieda ('N', 'S', 'V', 'F')
+            applied_rule_str (str): Reprezentácia najlepšie aktivovaného pravidla pre danú triedu
+        """
 
     # Uchováva skóre pre každú výstupnú triedu (agregácia aktivovaných pravidiel)
     rule_scores = defaultdict(float)
-
     # Ukladá najlepšie aktivované pravidlo pre každú triedu
     best_rules = {}
 
@@ -446,9 +343,9 @@ def fast_fuzzy_predict(row, fuzzy_mfs, rules, mf_width=0.7):
         # Získaj mieru príslušnosti pre každú podmienku pravidla
         memberships = [
             fuzz.interp_membership(
-                fuzzy_mfs[feature]['universe'],        # univerzum črty
-                fuzzy_mfs[feature]['mfs'][mf],         # členitostná funkcia MF
-                row[FIS_FEATURES.index(feature)]       # hodnota črty zo vzorky
+                fuzzy_mfs[feature]['universe'], # univerzum črty
+                fuzzy_mfs[feature]['mfs'][mf], # členitostná funkcia MF
+                row[FIS_FEATURES.index(feature)] # hodnota črty zo vzorky
             )
             for feature, mf in conds
         ]
@@ -460,7 +357,6 @@ def fast_fuzzy_predict(row, fuzzy_mfs, rules, mf_width=0.7):
         if score > rule_scores[label]:
             rule_scores[label] = score
             best_rules[label] = (conds, label, score)
-
     # Defuzzifikácia – výber výslednej triedy podľa agregovaných skóre
     label_universe = np.linspace(1, len(LABELS), 100)
     predicted_label = mamdani_defuzzification(rule_scores, label_universe, mf_width=mf_width)
@@ -479,22 +375,23 @@ def fast_fuzzy_predict(row, fuzzy_mfs, rules, mf_width=0.7):
 
 
 
+
 def predict_fast_batch(X_test, fuzzy_mfs, rules):
     """
-    Paralelne vykoná fuzzy inferenciu pre všetky vzorky v testovacom datasete
-    pomocou optimalizovanej funkcie fast_fuzzy_predict.
+        Paralelne vykoná fuzzy inferenciu pre všetky vzorky v testovacom datasete
+        pomocou optimalizovanej funkcie fast_fuzzy_predict.
 
-    Args:
-        X_test (np.ndarray): Testovacia množina (každý riadok = jedna vzorka)
-        fuzzy_mfs (dict): Slovník fuzzy množín pre všetky črty
-        rules (list): Zoznam fuzzy pravidiel vo formáte (podmienky, label, confidence)
+        Args:
+            X_test (np.ndarray): Testovacia množina (každý riadok = jedna vzorka)
+            fuzzy_mfs (dict): Slovník fuzzy množín pre všetky črty
+            rules (list): Zoznam fuzzy pravidiel vo formáte (podmienky, label, confidence)
 
-    Returns:
-        predictions (tuple): N-tica predikovaných tried (napr. 'N', 'V', ...)
-        applied_rules (tuple): N-tica textových reprezentácií najlepších aplikovaných pravidiel
-    """
+        Returns:
+            predictions (tuple): N-tica predikovaných tried (napr. 'N', 'V', ...)
+            applied_rules (tuple): N-tica textových reprezentácií najlepších aplikovaných pravidiel
+        """
 
-    # ⚡ Paralelná inferencia pre každú vzorku pomocou joblib.Parallel
+    # Paralelná inferencia pre každú vzorku pomocou joblib.Parallel
     results = Parallel(n_jobs=mp.cpu_count(), backend='threading')(
         delayed(fast_fuzzy_predict)(row, fuzzy_mfs, rules)
         for row in tqdm(X_test, desc="Fast fuzzy inference")
@@ -505,41 +402,39 @@ def predict_fast_batch(X_test, fuzzy_mfs, rules):
 
     return predictions, applied_rules
 
-
-
-
 def fuzzy_pipeline(X_train, y_train, X_test, y_test):
     """
-    Kompletný fuzzy klasifikačný pipeline:
-    - Vyváži trénovacie dáta
-    - Vygeneruje fuzzy množiny a pravidlá
-    - Vykoná inferenciu na testovacej množine
-    - Vyhodnotí model metrikami a uloží výsledky
+        Kompletný fuzzy klasifikačný pipeline:
+        - Vyváži trénovacie dáta
+        - Vygeneruje fuzzy množiny a pravidlá
+        - Vykoná inferenciu na testovacej množine
+        - Vyhodnotí model metrikami a uloží výsledky
 
-    Args:
-        X_train (np.ndarray): Trénovacie črty (napr. z DS1)
-        y_train (np.ndarray): Triedy pre trénovacie dáta
-        X_test (np.ndarray): Testovacie črty (napr. z DS2)
-        y_test (np.ndarray): Triedy pre testovacie dáta
-    """
-
-    # 1. Vyváženie datasetu pomocou under- a oversamplingu
+        Args:
+            X_train (np.ndarray): Trénovacie črty (napr. z DS1)
+            y_train (np.ndarray): Triedy pre trénovacie dáta
+            X_test (np.ndarray): Testovacie črty (napr. z DS2)
+            y_test (np.ndarray): Triedy pre testovacie dáta
+        """
+    #1. Vyváženie datasetu pomocou under- a oversamplingu
     df_bal = balance_datav2(X_train, y_train)
     df_bal.to_csv("balanced_DS1_for_both.csv", index=False)
-    print("Vyvážená dátová množina bola uložená do súboru 'balanced_DS1_for_both.csv'")
+    print(" Vyvážená dátová množina bola uložená do súboru 'balanced_DS1_for_both.csv'")
 
-    # 2. Generovanie fuzzy množín (členitostných funkcií) pre všetky črty
+    #2. Generovanie fuzzy množín (členitostných funkcií) pre všetky črty
     fuzzy_mfs = generate_all_mfs(df_bal, normalize=False)
     plot_and_save_fuzzy_mfs(fuzzy_mfs, FIS_FEATURES)
 
     # 3. Vizualizácia aktivácie fuzzy množín pre jeden konkrétny úder
     beat_features = X_test[0]
-    plot_single_beat_memberships(beat_features, fuzzy_mfs, "Heart_rate_bpm")
+    plot_single_beat_memberships(beat_features, fuzzy_mfs, "RR0_s")
+    plot_single_beat_memberships(beat_features, fuzzy_mfs, "RR1_s")
+    plot_single_beat_memberships(beat_features, fuzzy_mfs, "RR1_s")
+
 
     # 4. Generovanie fuzzy pravidiel + orezanie na max. počet pravidiel na triedu
     rules = build_rules(df_bal, fuzzy_mfs)
     rules = limit_rules_by_class(rules, max_per_class=300)
-
     # 5. Odstráň pravidlá pre triedy, ktoré nie sú v LABELS
     rules = [r for r in rules if r[1] in LABELS]
 
@@ -552,18 +447,17 @@ def fuzzy_pipeline(X_train, y_train, X_test, y_test):
         rule_dist[label] += 1
     print("Rozdelenie pravidiel podľa tried:", dict(rule_dist))
 
-    # 8. Paralelná fuzzy inferencia nad testovacou množinou
     y_pred, applied_rules = predict_fast_batch(X_test, fuzzy_mfs, rules)
 
-    # 9. Vytvor dataframe s detailnými predikciami a pravidlami
     detailed_results = pd.DataFrame(X_test, columns=FIS_FEATURES)
     detailed_results["True_Label"] = y_test
     detailed_results["Predicted_Label"] = y_pred
     detailed_results["Rule"] = applied_rules
+
     detailed_results.to_csv("detailed_predictions.csv", index=False)
 
     # 10. Výpis klasifikačnej správy a výpočty metrík
-    print("\nVýstup klasifikačnej správy:")
+    print("\n Výstup klasifikačnej správy:")
     report = classification_report(y_test, y_pred, digits=3, zero_division=0)
     macro_f1 = f1_score(y_test, y_pred, average="macro")
     mcc = matthews_corrcoef(y_test, y_pred)
@@ -573,77 +467,33 @@ def fuzzy_pipeline(X_train, y_train, X_test, y_test):
     y_pred_bin = label_binarize(y_pred, classes=LABELS)
     roc_auc = roc_auc_score(y_test_bin, y_pred_bin, average="macro", multi_class="ovr")
 
-    #  Výpis do konzoly
-    print(report)
+    # Výpis do konzoly
     print("Macro-F1:", macro_f1)
     print("MCC:", mcc)
     print("ROC-AUC:", roc_auc)
 
     # 11. Uloženie metrík do textového súboru
-    with open("fuzzy_report_parallel.txt", "w") as f:
+    with open("results/fuzzy_report_parallel.txt", "w") as f:
         f.write(report)
         f.write(f"\nMacro-F1: {macro_f1:.4f}")
         f.write(f"\nMCC: {mcc:.4f}")
         f.write(f"\nROC-AUC: {roc_auc:.4f}")
 
-    # 12. Konfúzna matica
+    #  12. Confusion Matrix
     cm = confusion_matrix(y_test, y_pred, labels=LABELS)
     plt.figure(figsize=(8, 6))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=LABELS, yticklabels=LABELS)
     plt.xlabel('Predikovaná trieda')
     plt.ylabel('Skutočná trieda')
-    plt.title('Konfúzna matica')
+    plt.title('Matica chybovosti')
     plt.tight_layout()
     plt.savefig("confusion_matrix.png", dpi=300)
     plt.close()
 
-    print("Confusion matrix uložená ako 'confusion_matrix.png'")
+    print("Matica chybovosti uložená ako 'confusion_matrix.png'")
 
 
 
-
-
-def balance_datav2(X, y):
-    """
-    Vyváži dátovú množinu v dvoch krokoch:
-    1. Odstráni triedu 'Q', ktorá nie je zahrnutá vo fuzzy klasifikácii.
-    2. Použije RandomUnderSampler na zníženie počtu dominantnej triedy 'N'.
-    3. Použije BorderlineSMOTE na syntetické doplnenie menšinových tried.
-
-    Args:
-        X (np.ndarray): Matica vstupných čŕt (napr. EKG príznaky)
-        y (np.ndarray): Zodpovedajúce triedy (napr. 'N', 'V', 'S', ...)
-
-    Returns:
-        df_bal (pd.DataFrame): Vyvážená dátová množina vo forme DataFrame (vrátane stĺpca 'label')
-    """
-
-    print("Vyvažovanie dátovej množiny...")
-
-    # 1. Imputácia chýbajúcich hodnôt (medianom)
-    imputer = SimpleImputer(strategy="median")
-    X_imp = imputer.fit_transform(X)
-
-    # 2. Odstránenie vzoriek s triedou 'Q', ktoré sa nezapočítavajú do klasifikácie
-    mask = y != "Q"
-    X_filtered, y_filtered = X_imp[mask], y[mask]
-
-    # 3. Undersampling: obmedz počet vzoriek triedy 'N' na max. 4000
-    rus = RandomUnderSampler(sampling_strategy={'N': 4000}, random_state=42)
-    X_under, y_under = rus.fit_resample(X_filtered, y_filtered)
-
-    # 4. Oversampling: syntetické generovanie vzoriek pre ostatné triedy pomocou BorderlineSMOTE
-    smote = BorderlineSMOTE(sampling_strategy='not majority', random_state=42)
-    X_bal, y_bal = smote.fit_resample(X_under, y_under)
-
-    # 5. Vytvorenie DataFrame a pripojenie cieľového stĺpca 'label'
-    df_bal = pd.DataFrame(X_bal, columns=FIS_FEATURES)
-    df_bal["label"] = y_bal
-
-    # Výpis výsledného rozdelenia tried po vyvážení
-    print("Rozdelenie tried po vyvážení:", Counter(df_bal["label"]))
-    print("Po balansovaní:")
-    return df_bal
 
 def plot_and_save_fuzzy_mfs(fuzzy_mfs, features):
     """
@@ -686,17 +536,17 @@ def plot_and_save_fuzzy_mfs(fuzzy_mfs, features):
         print(f"MF pre '{feature}' uložené do: {plot_path}")
 
 
-def plot_output_mfs(labels=['N', 'S', 'F', 'V'], mf_type='trimf', width=0.5):
+def plot_output_mfs(labels=['N', 'S', 'F', 'V'], mf_type='trimf', width=0.7):
     """
-    Vytvorí graf fuzzy množín (členitostných funkcií) pre výstupnú premennú "Class".
-    Triedy sú umiestnené na numerickej osi 1, 2, 3, 4 a každá má svoju fuzzy množinu.
+        Vytvorí graf fuzzy množín (členitostných funkcií) pre výstupnú premennú "Class".
+        Triedy sú umiestnené na numerickej osi 1, 2, 3, 4 a každá má svoju fuzzy množinu.
 
-    Args:
-        labels (list): Zoznam tried, pre ktoré sa budú tvoriť fuzzy množiny.
-                       Každá trieda bude reprezentovaná na svojej číselnej pozícii.
-        mf_type (str): Typ členitostnej funkcie ('trimf', 'trapmf', 'gaussmf').
-        width (float): Parametrická šírka fuzzy množiny (ovplyvňuje prekrytie).
-    """
+        Args:
+            labels (list): Zoznam tried, pre ktoré sa budú tvoriť fuzzy množiny.
+                           Každá trieda bude reprezentovaná na svojej číselnej pozícii.
+            mf_type (str): Typ členitostnej funkcie ('trimf', 'trapmf', 'gaussmf').
+            width (float): Parametrická šírka fuzzy množiny (ovplyvňuje prekrytie).
+        """
 
     # Vytvor univerzum hodnôt pre výstupnú premennú (napr. od 1.0 po 4.0)
     label_universe = np.linspace(1, len(labels), 500)
@@ -740,7 +590,7 @@ def plot_output_mfs(labels=['N', 'S', 'F', 'V'], mf_type='trimf', width=0.5):
     print(f"Výstupné MF uložené do: {plot_path}")
 
 
-def plot_single_beat_memberships(beat_features, fuzzy_mfs, feature_name="Heart_rate_bpm"):
+def plot_single_beat_memberships(beat_features, fuzzy_mfs, feature_name="P_amplitude"):
     """
     Vizualizuje fuzzy členitostné funkcie pre jednu črtu a označí,
     ako silno je hodnota konkrétneho úderu (beat) priradená ku každej množine.
@@ -753,7 +603,6 @@ def plot_single_beat_memberships(beat_features, fuzzy_mfs, feature_name="Heart_r
 
     # Získaj hodnotu danej črty z beat_features
     beat_value = beat_features[FIS_FEATURES.index(feature_name)]
-
     # Získaj univerzum a členitostné funkcie pre danú črtu
     universe = fuzzy_mfs[feature_name]['universe']
     mfs = fuzzy_mfs[feature_name]['mfs']
@@ -821,4 +670,3 @@ def main():
 # Spustenie skriptu, ak je spúšťaný priamo
 if __name__ == "__main__":
     main()
-

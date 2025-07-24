@@ -1,4 +1,13 @@
-# src/preprocessing/load.py
+"""
+Načítanie a spracovanie EKG záznamov z databázy MIT-BIH Arrhythmia
+-------------------------------------------------------------------
+* Načíta surový signál a anotácie zo súborov vo formáte WFDB.
+* Automaticky vyberá vhodný zvod (napr. MLII, II, V1…) alebo použije preferovaný.
+* Filtruje irelevantné anotácie (artefakty, šum) a mapuje ich na štandardizované AAMI triedy: N, S, V, F, Q.
+* Všetky informácie (signál, anotácie, R-peaky, počty tried) sú zapuzdrené v objektovej triede LoadedRecord.
+* Slúži ako základný vstupný bod pre extrakciu príznakov a trénovanie klasifikátorov.
+"""
+
 from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,16 +18,6 @@ import numpy as np
 import wfdb
 from src.config import DATA_DIR, LEAD
 from src.preprocessing.annotation_mapping import map_mitbih_annotation
-
-"""
-Načítanie a spracovanie EKG záznamov z databázy MIT-BIH Arrhythmia
--------------------------------------------------------------------
-* Načíta surový signál a anotácie zo súborov vo formáte WFDB.
-* Automaticky vyberá vhodný zvod (napr. MLII, II, V1…) alebo použije preferovaný.
-* Filtruje irelevantné anotácie (artefakty, šum) a mapuje ich na štandardizované AAMI triedy: N, S, V, F, Q.
-* Všetky informácie (signál, anotácie, R-peaky, počty tried) sú zapuzdrené v objektovej triede LoadedRecord.
-* Slúži ako základný vstupný bod pre extrakciu príznakov a trénovanie klasifikátorov.
-"""
 
 # ────────── Konštanty ──────────
 # Zoznam anotácií, ktoré nechceme zahrnúť do analýzy (napr. artefakty, chybné hodnoty)

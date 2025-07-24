@@ -1,6 +1,3 @@
-# preprocessing/annotation_mapping.py
-#https://www.researchgate.net/figure/Heartbeat-annotations-in-MIT-BIH-dataset-according-to-AAMI-EC-57-The-consolidated_fig1_372894714
-import logging
 """
 Mapovanie anotácií MIT-BIH databázy do štandardizovaných AAMI tried
 -------------------------------------------------------------------
@@ -10,6 +7,9 @@ Mapovanie anotácií MIT-BIH databázy do štandardizovaných AAMI tried
 * Neznáme alebo chýbajúce symboly sú automaticky zaradené do triedy Q a zaznamenané do logu.
 * Modul je kľúčový pre prípravu trénovacích a testovacích dát pre klasifikačné modely.
 """
+#https://www.researchgate.net/figure/Heartbeat-annotations-in-MIT-BIH-dataset-according-to-AAMI-EC-57-The-consolidated_fig1_372894714
+import logging
+
 
 ANNOTATION_MAP = {
     # Skupina N (Normálny úder)

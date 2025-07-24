@@ -1,10 +1,3 @@
-# preprocessing/filtering.py
-from __future__ import annotations
-from typing import Literal, Any
-import numpy as np
-import neurokit2 as nk
-import pywt
-
 """
 Viacstupňové predspracovanie EKG signálu pre analýzu a klasifikáciu
 --------------------------------------------------------------------
@@ -14,6 +7,14 @@ Viacstupňové predspracovanie EKG signálu pre analýzu a klasifikáciu
 * Funkcia `clean_ecg_v2` predstavuje odporúčaný „preset“ pre robustné predspracovanie signálu z MIT-BIH databázy.
 * Výstupné signály sú vhodné pre ďalšiu analýzu: extrakciu príznakov, klasifikáciu úderov, vizualizáciu a interpretáciu.
 """
+
+from __future__ import annotations
+from typing import Literal, Any
+import numpy as np
+import neurokit2 as nk
+import pywt
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. Kompletné spracovanie EKG signálu – výstup je DataFrame s črtami a slovník s informáciami
 # ─────────────────────────────────────────────────────────────────────────────

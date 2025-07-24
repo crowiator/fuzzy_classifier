@@ -6,9 +6,12 @@ zo scikit-learn. Umožňuje flexibilne zvoliť konkrétny typ modelu a jeho hype
 je kompatibilná so scikit-learn API (fit/predict) a podporuje modely: RandomForest, k-Nearest Neighbors (KNN),
 a Decision Tree. Tréning jednotlivých modelov využíva pomocné funkcie zo súboru `traditional_model.py`.
 """
+
 from sklearn.base import BaseEstimator, ClassifierMixin
 from src.classical.traditional_model import train_random_forest, train_knn, \
     train_decision_tree
+
+
 class CustomClassifier(BaseEstimator, ClassifierMixin):
 
     def __init__(self, model_type='RandomForest', criterion=None, max_depth=None, max_features=None,
@@ -70,7 +73,7 @@ class CustomClassifier(BaseEstimator, ClassifierMixin):
                 min_samples_split=self.min_samples_split
             )
         else:
-            raise ValueError(f"Unsupported model type {self.model_type}")
+            raise ValueError(f"Nepodporovaný typ modelu: {self.model_type}")
         return self
 
     def predict(self, X):

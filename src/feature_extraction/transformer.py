@@ -1,4 +1,4 @@
-# feature_extraction/transfomer.py
+
 """
 ML-friendly wrapper kombinujúci extrakciu časových čŕt z jednotlivých úderov s globálnou wavelet energiou.
 Aktualizovaný tak, aby bol kompatibilný s funkciou extract_beats(raw_sig, fs, r_idx, ...).

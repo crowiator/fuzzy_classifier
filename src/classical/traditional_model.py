@@ -1,4 +1,3 @@
-# classifiers/traditional_models.py
 """
 Súbor traditional_models.py obsahuje funkcie,
 ktoré umožňujú trénovanie a vyhodnotenie klasických metód strojového učenia
@@ -8,6 +7,7 @@ Každá funkcia pripraví a vráti natrénovaný klasifikačný model,
 pričom sú parametre trénovania flexibilné a možno ich meniť podľa potreby.
 Súčasťou súboru je aj funkcia na vyhodnotenie výsledkov klasifikácie.
 """
+
 import os
 import pandas as pd
 from sklearn.metrics import matthews_corrcoef, roc_auc_score
@@ -19,7 +19,7 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score, ConfusionMatrixDisplay
 from src.config import FIS_FEATURES
-
+import seaborn as sns
 
 def train_knn(X_train, y_train, metric, n_neighbors, weights):
     # Inicializácia modelu KNN s definovanými parametrami (metrika vzdialenosti, počet susedov, váhovanie)
@@ -60,7 +60,7 @@ def train_random_forest(X_train, y_train, criterion, max_depth, max_features, mi
 
 
 # Funkcia na vyhodnotenie natrénovaného modelu na testovacích dátach
-def evaluate_model(model, X_test, y_test, save_path=None, model_name="model"):
+def evaluate_model(model, X_test, y_test, save_path=None, model_name="model", cv_scores=None):
     class_names = ["N", "S", "V", "F"]
 
     # Predikcie
@@ -68,12 +68,12 @@ def evaluate_model(model, X_test, y_test, save_path=None, model_name="model"):
 
     # Confusion Matrix
     cm = confusion_matrix(y_test, y_pred, labels=class_names)
-    print("Confusion Matrix:")
+    print("Matica chybovosti:")
     print(cm)
 
     # Classification Report
     report = classification_report(y_test, y_pred, labels=class_names, zero_division=0)
-    print("\nClassification Report:")
+    print("\nSpráva o klasifikácii:")
     print(report)
 
     accuracy = accuracy_score(y_test, y_pred)
@@ -98,17 +98,21 @@ def evaluate_model(model, X_test, y_test, save_path=None, model_name="model"):
         base_path = os.path.splitext(save_path)[0]
 
         # Uloženie predikcií
-        df_results = pd.DataFrame(X_test, columns=FIS_FEATURES)
+        df_results = pd.DataFrame(X_test, columns=[f"{FIS_FEATURES[i]}" for i in range(X_test.shape[1])])
         df_results["True_Label"] = y_test
         df_results["Predicted_Label"] = y_pred
         csv_path = f"{base_path}_{model_name}.csv"
         df_results.to_csv(csv_path, index=False)
         print(f"Predikcie uložené do: {csv_path}")
 
+
         # Uloženie confusion matrix
-        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
-        disp.plot(cmap="Blues")
-        plt.title(f"Confusion Matrix – {model_name}")
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=class_names, yticklabels=class_names)
+        plt.xlabel('Predikovaná trieda')
+        plt.ylabel('Skutočná trieda')
+        plt.title('Matica chybovosti')
+        plt.tight_layout()
         cm_path = f"{base_path}_{model_name}_confusion_matrix.png"
         plt.savefig(cm_path)
         plt.close()
@@ -126,5 +130,5 @@ def evaluate_model(model, X_test, y_test, save_path=None, model_name="model"):
             f.write(f"MCC: {mcc:.4f}\n")
             f.write(f"ROC-AUC: {roc_auc:.4f}\n")
 
-        print(f"Klasifikačná správa uložená do: {report_path}")
+        print(f"Správa o klasifikácii uložená do: {report_path}")
 
