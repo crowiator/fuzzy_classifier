@@ -101,3 +101,83 @@ fuzzy_classifier/
 	•	Uložené pravidlá fuzzy systému (TXT)
 
 
+### Decision Tree
+```
+Classification Report – DecisionTree
+========================================
+
+              precision    recall  f1-score   support
+
+           N       0.98      0.82      0.89     20301
+           S       0.05      0.18      0.08       287
+           V       0.31      0.62      0.41      1243
+           F       0.14      0.61      0.22       385
+
+    accuracy                           0.80     22216
+   macro avg       0.37      0.56      0.40     22216
+weighted avg       0.92      0.80      0.84     22216
+
+Accuracy: 0.7951
+Macro-F1 Score: 0.4012
+MCC: 0.3530
+ROC-AUC: 0.7313
+
+```
+### k-Nearest Neighbors (k-NN)
+
+```
+              precision    recall  f1-score   support
+
+           N       0.98      0.75      0.85     20301
+           S       0.04      0.24      0.07       287
+           V       0.32      0.54      0.40      1243
+           F       0.07      0.55      0.13       385
+
+    accuracy                           0.73     22216
+   macro avg       0.35      0.52      0.36     22216
+weighted avg       0.91      0.73      0.80     22216
+
+Accuracy: 0.7252  
+Macro-F1 Score: 0.3619  
+MCC: 0.2800  
+ROC-AUC: 0.7021
+```
+
+### Random Forest
+
+```
+              precision    recall  f1-score   support
+
+           N       0.99      0.90      0.95     20301
+           S       0.23      0.20      0.21       287
+           V       0.80      0.65      0.71      1243
+           F       0.14      0.89      0.25       385
+
+    accuracy                           0.88     22216
+   macro avg       0.54      0.66      0.53     22216
+weighted avg       0.95      0.88      0.91     22216
+
+Accuracy: 0.8810  
+Macro-F1 Score: 0.5301  
+MCC: 0.5234  
+ROC-AUC: 0.8035
+```
+
+### Fuzzy klasifikátor
+
+```
+              precision    recall  f1-score   support
+
+           F      0.218     0.665     0.329       385
+           N      0.986     0.946     0.966     20301
+           S      0.145     0.279     0.191       287
+           V      0.701     0.582     0.636      1243
+
+    accuracy                          0.912     22216
+   macro avg      0.513     0.618     0.530     22216
+weighted avg      0.946     0.912     0.926     22216
+
+Macro-F1: 0.5303  
+MCC: 0.5616  
+ROC-AUC: 0.7820
+
