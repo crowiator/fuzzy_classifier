@@ -37,6 +37,7 @@ Príklad výsledkov pre model Decision Tree:
 | ROC-AUC              | 0.7313   |
 
 ## Štruktúra projektu
+```
 fuzzy_classifier/
 ├── .pytest_cache/
 ├── cache/
@@ -89,6 +90,7 @@ fuzzy_classifier/
 ├── pyproject.toml
 ├── requirements.txt
 └── README.md
+```
 
 
 
