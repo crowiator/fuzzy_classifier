@@ -1,0 +1,18 @@
+Classification Report – DecisionTree
+========================================
+
+              precision    recall  f1-score   support
+
+           N       0.98      0.82      0.89     20301
+           S       0.05      0.18      0.08       287
+           V       0.31      0.62      0.41      1243
+           F       0.14      0.61      0.22       385
+
+    accuracy                           0.80     22216
+   macro avg       0.37      0.56      0.40     22216
+weighted avg       0.92      0.80      0.84     22216
+
+Accuracy: 0.7951
+Macro-F1 Score: 0.4012
+MCC: 0.3530
+ROC-AUC: 0.7313
