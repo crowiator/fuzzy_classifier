@@ -521,7 +521,7 @@ def plot_and_save_fuzzy_mfs(fuzzy_mfs, features):
             plt.plot(universe, mf_curve, label=mf_name)
 
         # Popisy a štýl grafu
-        plt.title(f'Fuzzy Membership Functions - {feature}', fontsize=14)
+        plt.title(f'Funkcie príslušnosti pre fuzzy množiny – {feature}', fontsize=14)
         plt.xlabel(f'Hodnoty {feature}')
         plt.ylabel('Príslušnosť (μ)')
         plt.legend(loc='upper right')
