@@ -42,8 +42,8 @@ classifiers_with_params = [
     }),
     ("DecisionTree", "DecisionTree", {
         'criterion': ['gini', 'entropy'],
-        'max_depth': [None, 10, 20, 30],
-        'max_features': ['auto', 'sqrt', 'log2'],
+        'max_depth': [10, 20, 30],
+        'max_features': ['sqrt', 'log2'],
         'min_samples_leaf': [1, 2],
         'min_samples_split': [2, 5]
     })
@@ -66,7 +66,7 @@ def find_best_params(model_name, model_type, param_grid, X_train, y_train):
         """
 
     model = CustomClassifier(model_type=model_type)
-    grid_search = GridSearchCV(model, param_grid, cv=5, scoring='f1_macro', n_jobs=-1, verbose=2)
+    grid_search = GridSearchCV(model, param_grid, cv=10, scoring='f1_macro', n_jobs=-1, verbose=2)
     grid_search.fit(X_train, y_train)
 
     print(f" Optimalizované parametre pre model {model_name}: {grid_search.best_params_}")
